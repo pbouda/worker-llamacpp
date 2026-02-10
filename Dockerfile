@@ -4,56 +4,38 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 RUN ldconfig /usr/local/cuda-12.9/compat/
 
 RUN apt-get update -y \
-    && apt-get install -y python3-pip python3-dev cmake ninja-build curl libcurl4-openssl-dev git libssl-dev openssh-server nginx \
+    && apt-get install -y cmake ninja-build curl libcurl4-openssl-dev git libssl-dev openssh-server nginx \
     && rm -rf /var/lib/apt/lists/*
 
-# Install llama-cpp-python with CUDA support
+# Build llama.cpp with CUDA support (provides llama-server binary)
 ENV CMAKE_ARGS="-DGGML_CUDA=on"
 RUN git clone https://github.com/ggml-org/llama.cpp && \
     cd llama.cpp && \
     cmake -B build && \
     cmake --build build --config Release --target install && \
     cd ..
-RUN CMAKE_ARGS="-DLLAMA_BUILD=OFF" pip install llama-cpp-python
 
 # Dual-mode support: pod (development) or serverless (production)
 ARG MODE_TO_RUN=serverless
 ENV MODE_TO_RUN=$MODE_TO_RUN
 
-ENV PYTHONUNBUFFERED=1
 ENV WORKSPACE_DIR=/workspace
 
-# Install Python dependencies
-COPY builder/requirements.txt /requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install --upgrade pip && \
-    python3 -m pip install --upgrade -r /requirements.txt
+# Download model at build time
+ARG MODEL_URL="https://huggingface.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF/resolve/main/Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf"
+ARG MODEL_PATH="/models/model.gguf"
 
-# Install Jupyter for pod mode development
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python3 -m pip install jupyterlab
-
-# Setup for baking model into image (optional)
-ARG MODEL_REPO="unsloth/Qwen3-Coder-Next-GGUF"
-ARG MODEL_FILENAME="Qwen3-Coder-Next-Q4_K_M.gguf"
-ARG MODEL_DIR="/models"
-
-ENV MODEL_REPO=$MODEL_REPO \
-    MODEL_FILENAME=$MODEL_FILENAME \
-    MODEL_DIR=$MODEL_DIR \
-    MODEL_PATH="${MODEL_DIR}/${MODEL_FILENAME}" \
+ENV MODEL_PATH=$MODEL_PATH \
     N_GPU_LAYERS=-1 \
     N_CTX=4096
 
-COPY src /src
-
-RUN --mount=type=secret,id=HF_TOKEN,required=false \
-    if [ -f /run/secrets/HF_TOKEN ]; then \
-    export HF_TOKEN=$(cat /run/secrets/HF_TOKEN); \
-    fi && \
-    if [ -n "$MODEL_REPO" ] && [ -n "$MODEL_FILENAME" ]; then \
-    python3 /src/download_model.py; \
+RUN mkdir -p "$(dirname "$MODEL_PATH")" && \
+    if [ -n "$MODEL_URL" ]; then \
+    curl -L -o "$MODEL_PATH" "$MODEL_URL"; \
     fi
+
+# Configure nginx as reverse proxy for llama-server
+COPY nginx.conf /etc/nginx/sites-available/default
 
 # Setup startup script for dual-mode operation
 COPY start.sh /start.sh

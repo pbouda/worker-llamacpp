@@ -1,13 +1,9 @@
 #!/bin/bash
 set -e
 
-WORKSPACE_DIR="${WORKSPACE_DIR:-/workspace}"
-
 start_nginx() {
-    if command -v nginx &> /dev/null && service --status-all 2>&1 | grep -q nginx; then
-        echo "Starting Nginx service..."
-        service nginx start || true
-    fi
+    echo "Starting Nginx..."
+    service nginx start || true
 }
 
 setup_ssh() {
@@ -21,37 +17,38 @@ setup_ssh() {
     fi
 }
 
-start_jupyter() {
-    if command -v jupyter &> /dev/null; then
-        echo "Starting Jupyter Lab..."
-        mkdir -p "$WORKSPACE_DIR"
-        cd /
-        nohup jupyter lab --allow-root --no-browser --port=8888 --ip=* \
-            --NotebookApp.token='' --NotebookApp.password='' \
-            --FileContentsManager.delete_to_trash=False &> /jupyter.log &
-    else
-        echo "Jupyter not installed, skipping..."
-    fi
+start_llama_server() {
+    MODEL_PATH="${MODEL_PATH:-/models/model.gguf}"
+    N_GPU_LAYERS="${N_GPU_LAYERS:--1}"
+    N_CTX="${N_CTX:-4096}"
+
+    echo "Starting llama-server..."
+    echo "  Model: $MODEL_PATH"
+    echo "  GPU layers: $N_GPU_LAYERS"
+    echo "  Context: $N_CTX"
+
+    exec llama-server \
+        --model "$MODEL_PATH" \
+        --n-gpu-layers "$N_GPU_LAYERS" \
+        --ctx-size "$N_CTX" \
+        --host 0.0.0.0 \
+        --port 8080
 }
 
-call_python_handler() {
-    echo "Starting handler.py..."
-    python3 /src/handler.py
-}
-
-# Optional services for pod mode
-start_nginx
+# Optional services
 setup_ssh
 
 case $MODE_TO_RUN in
     serverless)
-        echo "Running in serverless mode"
-        call_python_handler
+        echo "Running in serverless mode (load balancing endpoint)"
+        start_nginx
+        start_llama_server
         ;;
     pod)
         echo "Running in pod mode"
-        start_jupyter
-        echo "Pod ready for development. Use 'python3 /src/handler.py' to test."
+        start_nginx
+        echo "Pod ready for development."
+        echo "Run 'llama-server --model \$MODEL_PATH --n-gpu-layers \$N_GPU_LAYERS --ctx-size \$N_CTX --host 0.0.0.0 --port 8080' to start the server."
         sleep infinity
         ;;
     *)

@@ -1,3 +1,0 @@
-runpod
-huggingface-hub
-hf-transfer
