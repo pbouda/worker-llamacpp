@@ -1,30 +1,37 @@
-FROM nvidia/cuda:12.9.1-devel-ubuntu22.04 AS build
+FROM nvidia/cuda:12.9.1-devel-ubuntu22.04
+
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+RUN ldconfig /usr/local/cuda-12.9/compat/
 
 RUN apt-get update -y \
-    && apt-get install -y python3-pip python3-dev cmake ninja-build \
+    && apt-get install -y python3-pip python3-dev cmake ninja-build curl libcurl4-openssl-dev git libssl-dev openssh-server nginx \
     && rm -rf /var/lib/apt/lists/*
 
 # Install llama-cpp-python with CUDA support
 ENV CMAKE_ARGS="-DGGML_CUDA=on"
-RUN LD_LIBRARY_PATH=/usr/local/cuda-12.9/compat:$LD_LIBRARY_PATH \
-    pip install llama-cpp-python
+RUN git clone https://github.com/ggml-org/llama.cpp && \
+    cd llama.cpp && \
+    cmake -B build && \
+    cmake --build build --config Release --target install && \
+    cd ..
+RUN CMAKE_ARGS="-DLLAMA_BUILD=OFF" pip install llama-cpp-python
 
-FROM nvidia/cuda:12.9.1-base-ubuntu22.04
+# Dual-mode support: pod (development) or serverless (production)
+ARG MODE_TO_RUN=serverless
+ENV MODE_TO_RUN=$MODE_TO_RUN
 
-RUN apt-get update -y \
-    && apt-get install -y python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN ldconfig /usr/local/cuda-12.9/compat/
-
-# Copy llama-cpp-python from build stage
-COPY --from=build /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/dist-packages
+ENV PYTHONUNBUFFERED=1
+ENV WORKSPACE_DIR=/workspace
 
 # Install Python dependencies
 COPY builder/requirements.txt /requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     python3 -m pip install --upgrade pip && \
     python3 -m pip install --upgrade -r /requirements.txt
+
+# Install Jupyter for pod mode development
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python3 -m pip install jupyterlab
 
 # Setup for baking model into image (optional)
 ARG MODEL_REPO="unsloth/Qwen3-Coder-Next-GGUF"
@@ -48,4 +55,8 @@ RUN --mount=type=secret,id=HF_TOKEN,required=false \
     python3 /src/download_model.py; \
     fi
 
-CMD ["python3", "/src/handler.py"]
+# Setup startup script for dual-mode operation
+COPY start.sh /start.sh
+RUN chmod +x /start.sh
+
+CMD ["/start.sh"]
