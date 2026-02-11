@@ -1,25 +1,32 @@
-FROM nvidia/cuda:12.9.1-devel-ubuntu22.04
-
-ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-RUN ldconfig /usr/local/cuda-12.9/compat/
+# Stage 1: Build llama.cpp
+FROM nvidia/cuda:12.9.1-devel-ubuntu22.04 AS builder
 
 RUN apt-get update -y \
-    && apt-get install -y cmake ninja-build curl libcurl4-openssl-dev git libssl-dev openssh-server nginx \
+    && apt-get install -y cmake ninja-build curl libcurl4-openssl-dev git libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Build llama.cpp with CUDA support (provides llama-server binary)
-ENV CMAKE_ARGS="-DGGML_CUDA=on"
 RUN git clone https://github.com/ggml-org/llama.cpp && \
     cd llama.cpp && \
     cmake -B build && \
-    cmake --build build --config Release --target install && \
-    cd ..
+    cmake --build build --config Release && \
+    cmake --install build --prefix /opt/llama.cpp
+
+# Stage 2: Runtime
+FROM nvidia/cuda:12.9.1-runtime-ubuntu22.04
+
+RUN apt-get update -y \
+    && apt-get install -y curl libcurl4 libgomp1 openssh-server nginx \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /opt/llama.cpp /opt/llama.cpp
+
+ENV PATH="/opt/llama.cpp/bin:$PATH" \
+    LD_LIBRARY_PATH="/opt/llama.cpp/lib:$LD_LIBRARY_PATH"
 
 # Dual-mode support: pod (development) or serverless (production)
 ARG MODE_TO_RUN=serverless
-ENV MODE_TO_RUN=$MODE_TO_RUN
-
-ENV WORKSPACE_DIR=/workspace
+ENV MODE_TO_RUN=$MODE_TO_RUN \
+    WORKSPACE_DIR=/workspace
 
 # Download model at build time
 ARG MODEL_URL="https://huggingface.co/unsloth/Nemotron-3-Nano-30B-A3B-GGUF/resolve/main/Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf"
